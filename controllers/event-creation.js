@@ -1,7 +1,7 @@
 const db = require('../connection/connection');
 
 const CreateEvent = (req, res) => {
-    const creator_id = req.user.id
+    const creator_id = req.user.user_id
     const{event_name, event_date, location} = req.body
     if (!creator_id) {
         console.log(`No creator id found`)

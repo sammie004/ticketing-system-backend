@@ -58,7 +58,8 @@ const login = (req, res) => {
                 console.log(`invalid email or password`)
                 return res.status(400).json({message:`invalid email or password`})
             } else {
-                token = jwt.sign({id:user.id,email: email}, process.env.JWT_SECRET, {expiresIn: '1h'})
+                const token = jwt.sign({ user_id: user.id, email: user.email , name:user.name}, process.env.JWT_SECRET, { expiresIn: '1h' })
+
                 console.log(`user signed in successfully`)
                 return res.status(200).json({message:`Login Successful`, name: user.name, email: user.email, token: token})
             }
