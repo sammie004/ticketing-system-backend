@@ -14,7 +14,7 @@ const GetTickets = (req, res) => {
     })
 }
 const verifyTicket = (req, res) => {
-    const { ticket_reference } = req.body;
+    const {ticket_reference} = req.body;
 
     if (!ticket_reference) {
         return res.status(400).json({
@@ -43,7 +43,10 @@ const verifyTicket = (req, res) => {
         }
 
         return res.status(200).json({
-            message: "Ticket verified successfully"
+            message: "Ticket verified successfully",
+            name: ticket.name,
+            ticketType: ticket.ticket_type,
+            message: "Entry granted"
         });
     });
 };

@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { PDFDocument, rgb, StandardFonts } = require("pdf-lib");
 const QRCode = require("qrcode");
+const bwipjs = require("bwip-js");
 const nodemailer = require("nodemailer");
 
 /**
@@ -112,67 +113,69 @@ const transporter = nodemailer.createTransport({
 // -----------------------------
 const sendTicketsPDF = async (user_name, user_email, event_id, ticket_type, ticketsData, event_name) => {
   try {
-    // Prefer a Unicode TTF that includes currency glyphs (e.g. NotoSans).
-    // Register fontkit and embed the TTF if present; otherwise fall back to StandardFonts.
-    const unicodeFontPath = path.join(__dirname, "../fonts/NotoSans-Regular.ttf");
     const pdfDoc = await PDFDocument.create();
-    let font;
-    let usingUnicodeFont = false;
-    if (fs.existsSync(unicodeFontPath)) {
-      try {
-        const fontkit = require("@pdf-lib/fontkit");
-        pdfDoc.registerFontkit(fontkit);
-        const fontBytes = fs.readFileSync(unicodeFontPath);
-        font = await pdfDoc.embedFont(fontBytes);
-        usingUnicodeFont = true;
-      } catch (e) {
-        console.warn("Could not load unicode font, falling back to StandardFonts.", e);
-        font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      }
-    } else {
-      font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    }
-    const headerPrefix = ""; // avoid embedding color emoji; use plain text
+    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
     for (const ticket of ticketsData) {
-      const page = pdfDoc.addPage([400, 250]);
+      const page = pdfDoc.addPage([300, 600]);
       const { width, height } = page.getSize();
 
-      // Background & border
-      page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(0.98, 0.98, 0.98) });
-      page.drawRectangle({ x: 10, y: 10, width: width - 20, height: height - 20, borderColor: rgb(0.2, 0.2, 0.2), borderWidth: 1 });
+      // ---------- Rounded gradient background ----------
+      const gradientSteps = 100;
+      for (let i = 0; i < gradientSteps; i++) {
+        const t = i / gradientSteps;
+        const r = 0.8 * (1 - t) + 0.55 * t; // purple gradient
+        const g = 0.3 * (1 - t) + 0.2 * t;
+        const b = 0.95 * (1 - t) + 0.75 * t;
+        page.drawRectangle({ x: 0, y: i * (height / gradientSteps), width, height: height / gradientSteps, color: rgb(r, g, b) });
+      }
 
-      
-      // Event info
-      page.drawText(`Event: ${event_name}`, { x: 20, y: height - 70, size: 14, font, color: rgb(0.2, 0.2, 0.2) });
-      page.drawText(`Ticket Ref: ${ticket[2]}`, { x: 20, y: height - 95, size: 12, font, color: rgb(0.3, 0.3, 0.3) });
-      page.drawText(`Name: ${user_name}`, { x: 20, y: height - 120, size: 12, font });
-      page.drawText(`Email: ${user_email}`, { x: 20, y: height - 140, size: 12, font });
-      // Header
-      page.drawText(`${headerPrefix}${ticket_type.toUpperCase()} TICKET`, { x: 20, y: height - 40, size: 18, font, color: rgb(0.1, 0.1, 0.1) });
-
-      // Amount: use Naira symbol only if Unicode font is available
-      const amountText = usingUnicodeFont ? `Amount Paid: ₦${ticket[7]}` : `Amount Paid: NGN${ticket[7]}`;
-      page.drawText(amountText, { x: 20, y: height - 160, size: 12, font, color: rgb(0.3, 0.1, 0.1) });
-      // QR code for ticket reference
+      // ---------- Top QR Code ----------
       const qrDataUrl = await QRCode.toDataURL(ticket[2]);
-      const qrImageBytes = Buffer.from(qrDataUrl.split(",")[1], "base64");
-      const qrImage = await pdfDoc.embedPng(qrImageBytes);
-      page.drawImage(qrImage, { x: width - 110, y: 20, width: 90, height: 90 });
+      const qrBytes = Buffer.from(qrDataUrl.split(",")[1], "base64");
+      const qrImage = await pdfDoc.embedPng(qrBytes);
+      page.drawImage(qrImage, { x: 30, y: height - 150, width: 100, height: 100 });
+
+      // ---------- VIP / Ticket Type ----------
+      page.drawText(ticket_type.toUpperCase(), { x: 150, y: height - 70, size: 28, font: fontBold, color: rgb(1, 1, 1) });
+
+      // ---------- Middle white box for ticket/event name ----------
+      page.drawRectangle({
+        x: 20,
+        y: height - 280,
+        width: width - 40,
+        height: 100,
+        color: rgb(1, 1, 1),
+        borderRadius: 5,
+      });
+      page.drawText("TICKET NAME", { x: 30, y: height - 230, size: 16, font: fontBold, color: rgb(0.55, 0.2, 0.75) });
+      page.drawText(event_name, { x: 30, y: height - 250, size: 12, font: fontRegular, color: rgb(0.3, 0.3, 0.3) });
+
+      // ---------- Details section ----------
+      page.drawText(`Name: ${user_name}`, { x: 30, y: height - 310, size: 12, font: fontRegular, color: rgb(1, 1, 1) });
+      page.drawText(`Code: ${ticket[2]}`, { x: 30, y: height - 330, size: 12, font: fontRegular, color: rgb(1, 1, 1) });
+
+      // ---------- Bottom barcode ----------
+      // const barcodeDataUrl = await QRCode.toDataURL(ticket[2], { type: 'image/png' });
+      // const barcodeBytes = Buffer.from(barcodeDataUrl.split(',')[1], 'base64');
+      // const barcodeImg = await pdfDoc.embedPng(barcodeBytes);
+      // page.drawImage(barcodeImg, { x: 50, y: 20, width: 200, height: 50 });
+
+      // Optional: simulate cutouts at top/bottom with white rectangles
+      page.drawRectangle({ x: width / 2 - 15, y: height - 10, width: 30, height: 20, color: rgb(1, 1, 1) }); // top notch
+      // page.drawRectangle({ x: width / 2 - 15, y: 0, width: 30, height: 20, color: rgb(1, 1, 1) }); // bottom notch
     }
 
-    // Save PDF
+    // ---------- Save PDF ----------
     const pdfBytes = await pdfDoc.save();
     const ticketsDir = path.join(__dirname, "../tickets");
     if (!fs.existsSync(ticketsDir)) fs.mkdirSync(ticketsDir);
     const pdfPath = path.join(ticketsDir, `${crypto.randomUUID()}.pdf`);
     fs.writeFileSync(pdfPath, pdfBytes);
 
-    // If SKIP_EMAIL is set, skip sending and leave the PDF for inspection
-    if (process.env.SKIP_EMAIL === "true") {
-      console.log(`SKIP_EMAIL=true, PDF written to ${pdfPath}`);
-    } else {
-      // Send email
+    // ---------- Send email ----------
+    if (process.env.SKIP_EMAIL !== "true") {
       await transporter.sendMail({
         from: process.env.SMTP_USER,
         to: user_email,
@@ -180,14 +183,16 @@ const sendTicketsPDF = async (user_name, user_email, event_id, ticket_type, tick
         text: `Hello ${user_name},\n\nAttached are your tickets for the event.`,
         attachments: [{ filename: "tickets.pdf", path: pdfPath }],
       });
-
-      try { fs.unlinkSync(pdfPath); } catch (e) { /* ignore */ }
+      try { fs.unlinkSync(pdfPath); } catch(e) {}
       console.log(`Tickets emailed to ${user_email}`);
+    } else {
+      console.log(`SKIP_EMAIL=true, PDF written to ${pdfPath}`);
     }
   } catch (err) {
-    console.error("Error generating/sending ticket PDF:", err);
+    console.error("Error generating ticket PDF:", err);
   }
 };
+
 
 // -----------------------------
 // Payment verification & ticket creation
