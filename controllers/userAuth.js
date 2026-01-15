@@ -6,7 +6,7 @@ dotenv.config()
 
 // signup route
 const SignUp = (req, res) => {
-    const { name, email, password } = req.body
+    const { name, email, password, phone_number} = req.body
     if (!email || !password) {
         console.log(`email and password required`)
         return res.status(404).json({ message: `Those fields cant be left empty` })
@@ -21,9 +21,9 @@ const SignUp = (req, res) => {
             console.log(`this user already exists`)
             return res.status(409).json({ message: `this user already exists` })
         } else {
-            const query2 = `insert into event_attendees (name, email, password) values (?, ?, ?)`
+            const query2 = `insert into event_attendees (name, email, password, phone_number) values (?, ?, ?, ?)`
             const hashed_password = await bcrpyt.hash(password, 10)
-            db.query(query2, [name, email, hashed_password], (err, result) => {
+            db.query(query2, [name, email, hashed_password, phone_number], (err, result) => {
                 if (err) {
                     console.log(`an error occured`, err)
                     return res.status(500).json({ message: `internal server error`, err })

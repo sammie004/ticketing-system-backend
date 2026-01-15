@@ -1,3 +1,4 @@
+//Dependencies 
 const crypto = require("crypto");
 const db = require("../connection/connection");
 const fs = require("fs");
@@ -6,6 +7,7 @@ const { PDFDocument, rgb, StandardFonts } = require("pdf-lib");
 const QRCode = require("qrcode");
 const bwipjs = require("bwip-js");
 const nodemailer = require("nodemailer");
+const {sendSMS} = require("../smsLogic/sms");
 
 /**
  * 1️⃣ INITIALIZE PAYMENT
@@ -108,6 +110,15 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Normalize Phone number
+const normalizePhone = (phone) => {
+  if (!phone) return ""; // handle null/undefined
+  const strPhone = String(phone).trim();
+  if (!strPhone) return "";
+  if (strPhone.startsWith("+")) return strPhone;
+  return "+234" + strPhone.replace(/^0/, "");
+};
+
 // -----------------------------
 // PDF generation & email
 // -----------------------------
@@ -156,12 +167,7 @@ const sendTicketsPDF = async (user_name, user_email, event_id, ticket_type, tick
       page.drawText(`Name: ${user_name}`, { x: 30, y: height - 310, size: 12, font: fontRegular, color: rgb(1, 1, 1) });
       page.drawText(`Code: ${ticket[2]}`, { x: 30, y: height - 330, size: 12, font: fontRegular, color: rgb(1, 1, 1) });
 
-      // ---------- Bottom barcode ----------
-      // const barcodeDataUrl = await QRCode.toDataURL(ticket[2], { type: 'image/png' });
-      // const barcodeBytes = Buffer.from(barcodeDataUrl.split(',')[1], 'base64');
-      // const barcodeImg = await pdfDoc.embedPng(barcodeBytes);
-      // page.drawImage(barcodeImg, { x: 50, y: 20, width: 200, height: 50 });
-
+     
       // Optional: simulate cutouts at top/bottom with white rectangles
       page.drawRectangle({ x: width / 2 - 15, y: height - 10, width: 30, height: 20, color: rgb(1, 1, 1) }); // top notch
       // page.drawRectangle({ x: width / 2 - 15, y: 0, width: 30, height: 20, color: rgb(1, 1, 1) }); // bottom notch
@@ -202,13 +208,15 @@ const verifyPayment = async (req, res) => {
   if (!reference) return res.status(400).json({ message: "Reference is required" });
 
   try {
-    // 1️⃣ Verify payment via Paystack
+    // Verify payment via Paystack
     const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
       headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
     });
     const data = await response.json();
 
-    if (!data.status || data.data.status !== "success") return res.status(400).json({ message: "Payment not successful" });
+    if (!data.status || data.data.status !== "success") {
+      return res.status(400).json({ message: "Payment not successful" });
+    }
 
     const { event_id, ticket_type, user_id, user_name, quantity } = data.data.metadata;
     const user_email = data.data.customer.email;
@@ -216,28 +224,38 @@ const verifyPayment = async (req, res) => {
 
     if (!quantity || quantity < 1) return res.status(400).json({ message: "Invalid ticket quantity" });
 
+    // Use a DB transaction
     db.getConnection((err, connection) => {
       if (err) return res.status(500).json({ message: "DB error", err });
 
-      connection.beginTransaction(async err => {
+      connection.beginTransaction(async (err) => {
         if (err) return connection.release();
 
         try {
-          // 2️⃣ Save payment
+          // Save payment
           await new Promise((resolve, reject) => {
-            const paymentQuery = `INSERT INTO payments (reference, user_id, event_id, ticket_type, quantity, amount, status, payment_gateway) VALUES (?, ?, ?, ?, ?, ?, 'success', 'paystack')`;
+            const paymentQuery = `
+              INSERT INTO payments (reference, user_id, event_id, ticket_type, quantity, amount, status, payment_gateway)
+              VALUES (?, ?, ?, ?, ?, ?, 'success', 'paystack')
+            `;
             connection.query(paymentQuery, [reference, user_id, event_id, ticket_type, quantity, total_amount_paid], (err) => err ? reject(err) : resolve());
           });
 
-          // 3️⃣ Decrement ticket quantity
-          const updateQty = `UPDATE ticket_types SET quantity = quantity - ? WHERE event_id = ? AND ticket_type = ? AND quantity >= ?`;
+          // Decrement ticket quantity
+          const updateQty = `
+            UPDATE ticket_types SET quantity = quantity - ?
+            WHERE event_id = ? AND ticket_type = ? AND quantity >= ?
+          `;
           const resultQty = await new Promise((resolve, reject) => {
             connection.query(updateQty, [quantity, event_id, ticket_type, quantity], (err, result) => err ? reject(err) : resolve(result));
           });
           if (resultQty.affectedRows === 0) throw new Error("Not enough tickets available");
 
-          // 4️⃣ Create tickets in DB
-          const ticketQuery = `INSERT INTO tickets (event_id, user_id, ticket_reference, ticket_type, status, user_name, user_email, amount_paid) VALUES ?`;
+          // Create tickets
+          const ticketQuery = `
+            INSERT INTO tickets (event_id, user_id, ticket_reference, ticket_type, status, user_name, user_email, amount_paid)
+            VALUES ?
+          `;
           const perTicketAmount = total_amount_paid / quantity;
           const ticketsData = Array.from({ length: quantity }, () => [
             event_id,
@@ -254,21 +272,59 @@ const verifyPayment = async (req, res) => {
             connection.query(ticketQuery, [ticketsData], (err) => err ? reject(err) : resolve());
           });
 
-          // Commit DB
-          connection.commit(err => connection.release());
+          // Commit transaction and release connection
+          connection.commit(err => {
+            if (err) return connection.rollback(() => connection.release());
+            connection.release();
 
-          // 5️⃣ Respond immediately
-          res.status(200).json({
-            message: "Payment verified & tickets issued. PDF will be emailed shortly!",
-            ticket_count: quantity,
-            payment_reference: reference,
+            res.status(200).json({
+              message: "Payment verified & tickets issued. PDF will be emailed shortly!",
+              ticket_count: quantity,
+              payment_reference: reference,
+            });
+            
+
+            // Async: get event name and user phone, then send SMS & PDF
+            db.query(`SELECT event_name FROM events WHERE id = ?`, [event_id], (err, results) => {
+          const event_name = (!err && results.length > 0) ? results[0].event_name : '';
+
+  db.query(`SELECT phone_number FROM event_attendees WHERE user_id = ?`, [user_id], (err, results) => {
+    const user_phone = (!err && results.length > 0) ? results[0].phone_number : '';
+
+    const message = `
+🎟 Ticket Purchase Successful!
+Event: ${event_name || "Unknown Event"}
+Type: ${ticket_type}
+Qty: ${quantity}
+Ticket Codes:
+${ticketsData.map(t => t[2]).join("\n")}
+Keep this SMS safe.
+`;
+  console.log(event_name, user_phone);
+
+    const normalizedPhone = normalizePhone(user_phone);
+    if (normalizedPhone) {
+      sendSMS(normalizedPhone, message);
+    } else {
+      console.warn("User phone number not found, SMS not sent");
+    }
+
+    // Generate and send PDF asynchronously
+    (async () => {
+      try {
+        await sendTicketsPDF(user_name, user_email, event_id, ticket_type, ticketsData, event_name || "Unknown Event");
+      } catch (err) {
+        console.error("Error sending tickets PDF:", err);
+      }
+    })();
+  });
+});
+
           });
-
-          // 6️⃣ Generate PDFs & send emails asynchronously
-          sendTicketsPDF(user_name, user_email, event_id, ticket_type, ticketsData, `Event #${event_id}`);
         } catch (error) {
           connection.rollback(() => connection.release());
           console.error("Error processing payment/tickets:", error);
+          return res.status(500).json({ message: "Error processing payment/tickets", error });
         }
       });
     });
@@ -277,4 +333,5 @@ const verifyPayment = async (req, res) => {
     res.status(500).json({ message: "Verification error", error });
   }
 };
+
 module.exports = { buyTicket, verifyPayment };
