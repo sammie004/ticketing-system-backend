@@ -7,6 +7,7 @@ const { PDFDocument, rgb, StandardFonts } = require("pdf-lib");
 const QRCode = require("qrcode");
 const bwipjs = require("bwip-js");
 const nodemailer = require("nodemailer");
+const twilio = require("twilio");
 const {sendSMS} = require("../smsLogic/sms");
 
 /**
@@ -203,12 +204,14 @@ const sendTicketsPDF = async (user_name, user_email, event_id, ticket_type, tick
 // -----------------------------
 // Payment verification & ticket creation
 // -----------------------------
+const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+
 const verifyPayment = async (req, res) => {
   const { reference } = req.body;
   if (!reference) return res.status(400).json({ message: "Reference is required" });
 
   try {
-    // Verify payment via Paystack
+    // ------------------- Verify payment -------------------
     const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
       headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
     });
@@ -224,114 +227,104 @@ const verifyPayment = async (req, res) => {
 
     if (!quantity || quantity < 1) return res.status(400).json({ message: "Invalid ticket quantity" });
 
-    // Use a DB transaction
-    db.getConnection((err, connection) => {
-      if (err) return res.status(500).json({ message: "DB error", err });
+    // ------------------- DB transaction -------------------
+    db.getConnection(async (err, connection) => {
+      if (err) return res.status(500).json({ message: "DB connection error", err });
 
-      connection.beginTransaction(async (err) => {
-        if (err) return connection.release();
+      try {
+        await new Promise((resolve, reject) => connection.beginTransaction(err => (err ? reject(err) : resolve())));
 
-        try {
-          // Save payment
-          await new Promise((resolve, reject) => {
-            const paymentQuery = `
-              INSERT INTO payments (reference, user_id, event_id, ticket_type, quantity, amount, status, payment_gateway)
-              VALUES (?, ?, ?, ?, ?, ?, 'success', 'paystack')
-            `;
-            connection.query(paymentQuery, [reference, user_id, event_id, ticket_type, quantity, total_amount_paid], (err) => err ? reject(err) : resolve());
-          });
+        // ---- Save payment ----
+        await new Promise((resolve, reject) => {
+          const paymentQuery = `
+            INSERT INTO payments (reference, user_id, event_id, ticket_type, quantity, amount, status, payment_gateway)
+            VALUES (?, ?, ?, ?, ?, ?, 'success', 'paystack')
+          `;
+          connection.query(paymentQuery, [reference, user_id, event_id, ticket_type, quantity, total_amount_paid], (err) =>
+            err ? reject(err) : resolve()
+          );
+        });
 
-          // Decrement ticket quantity
+        // ---- Decrement ticket quantity ----
+        const resultQty = await new Promise((resolve, reject) => {
           const updateQty = `
             UPDATE ticket_types SET quantity = quantity - ?
             WHERE event_id = ? AND ticket_type = ? AND quantity >= ?
           `;
-          const resultQty = await new Promise((resolve, reject) => {
-            connection.query(updateQty, [quantity, event_id, ticket_type, quantity], (err, result) => err ? reject(err) : resolve(result));
-          });
-          if (resultQty.affectedRows === 0) throw new Error("Not enough tickets available");
+          connection.query(updateQty, [quantity, event_id, ticket_type, quantity], (err, result) =>
+            err ? reject(err) : resolve(result)
+          );
+        });
+        if (resultQty.affectedRows === 0) throw new Error("Not enough tickets available");
 
-          // Create tickets
+        // ---- Create tickets ----
+        const ticketsData = Array.from({ length: quantity }, () => [
+          event_id,
+          user_id,
+          crypto.randomUUID(),
+          ticket_type,
+          "unused",
+          user_name,
+          user_email,
+          total_amount_paid / quantity,
+        ]);
+
+        await new Promise((resolve, reject) => {
           const ticketQuery = `
             INSERT INTO tickets (event_id, user_id, ticket_reference, ticket_type, status, user_name, user_email, amount_paid)
             VALUES ?
           `;
-          const perTicketAmount = total_amount_paid / quantity;
-          const ticketsData = Array.from({ length: quantity }, () => [
-            event_id,
-            user_id,
-            crypto.randomUUID(),
-            ticket_type,
-            "unused",
-            user_name,
-            user_email,
-            perTicketAmount,
-          ]);
+          connection.query(ticketQuery, [ticketsData], (err) => (err ? reject(err) : resolve()));
+        });
 
-          await new Promise((resolve, reject) => {
-            connection.query(ticketQuery, [ticketsData], (err) => err ? reject(err) : resolve());
-          });
+      connection.commit(err => {
+  if (err) return connection.rollback(() => connection.release());
 
-          // Commit transaction and release connection
-          connection.commit(err => {
-            if (err) return connection.rollback(() => connection.release());
-            connection.release();
+  // Release connection first
+  connection.release();
 
-            res.status(200).json({
-              message: "Payment verified & tickets issued. PDF will be emailed shortly!",
-              ticket_count: quantity,
-              payment_reference: reference,
-            });
-            
+  // Send response to client
+  res.status(200).json({
+    message: "Payment verified & tickets issued. PDF will be emailed shortly!",
+    ticket_count: quantity,
+    payment_reference: reference,
+  });
 
-            // Async: get event name and user phone, then send SMS & PDF
-            db.query(`SELECT event_name FROM events WHERE id = ?`, [event_id], (err, results) => {
-          const event_name = (!err && results.length > 0) ? results[0].event_name : '';
+  // Fire-and-forget SMS & PDF
+  db.query(`SELECT event_name FROM events WHERE id = ?`, [event_id], (err, results) => {
+    const event = results.length > 0 ? results[0] : null;
+    const event_name = event ? event.event_name : "Unknown Event";
 
-  db.query(`SELECT phone_number FROM event_attendees WHERE user_id = ?`, [user_id], (err, results) => {
-    const user_phone = (!err && results.length > 0) ? results[0].phone_number : '';
+    db.query(`SELECT phone_number FROM event_attendees WHERE user_id = ?`, [user_id], (err, results) => {
+      const user = results.length > 0 ? results[0] : null;
+      const user_phone = user ? user.phone_number : null;
 
-    const message = `
-🎟 Ticket Purchase Successful!
-Event: ${event_name || "Unknown Event"}
-Type: ${ticket_type}
-Qty: ${quantity}
-Ticket Codes:
-${ticketsData.map(t => t[2]).join("\n")}
-Keep this SMS safe.
-`;
-  console.log(event_name, user_phone);
+      if (user_phone) {
+        const normalizedPhone = normalizePhone(user_phone);
+        if (normalizedPhone) {
+          sendSMS(normalizedPhone,
+         `🎟 Ticket Confirmed!,
+          Event: ${event_name},
+          Type: ${ticket_type}, Qty: ${quantity},
+          Code: ${ticketsData[0][2]}${quantity > 1 ? ` +${quantity - 1} more` : ''}`)
 
-    const normalizedPhone = normalizePhone(user_phone);
-    if (normalizedPhone) {
-      sendSMS(normalizedPhone, message);
-    } else {
-      console.warn("User phone number not found, SMS not sent");
-    }
+        } else console.warn("Cannot normalize phone, SMS not sent");
+      } else console.warn("User phone not found, SMS not sent");
 
-    // Generate and send PDF asynchronously
-    (async () => {
-      try {
-        await sendTicketsPDF(user_name, user_email, event_id, ticket_type, ticketsData, event_name || "Unknown Event");
-      } catch (err) {
-        console.error("Error sending tickets PDF:", err);
-      }
-    })();
+      sendTicketsPDF(user_name, user_email, event_id, ticket_type, ticketsData, event_name)
+        .catch(err => console.error("Error sending tickets PDF:", err));
+    });
   });
 });
-
-          });
-        } catch (error) {
-          connection.rollback(() => connection.release());
-          console.error("Error processing payment/tickets:", error);
-          return res.status(500).json({ message: "Error processing payment/tickets", error });
-        }
-      });
+} catch (error) {
+        connection.rollback(() => connection.release());
+        console.error("Error processing payment/tickets:", error);
+        return res.status(500).json({ message: "Error processing payment/tickets", error });
+      }
     });
   } catch (error) {
     console.error("Verification error:", error);
     res.status(500).json({ message: "Verification error", error });
   }
 };
-
 module.exports = { buyTicket, verifyPayment };

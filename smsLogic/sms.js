@@ -1,33 +1,46 @@
-// SMS sending logic using Termii API
+// SMS sending logic using Twilio API
+const twilio = require("twilio");
+
+// Initialize Twilio client with environment variables
+const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+
+/**
+ * normalizePhone ensures phone is in E.164 format for Twilio
+ * Examples:
+ *   08012345678 => +2348012345678
+ *   2348012345678 => +2348012345678
+ *   +2348012345678 => +2348012345678
+ */
+const normalizePhone = (phone) => {
+  if (!phone) return null;
+
+  const str = String(phone).replace(/\s+/g, ""); // remove spaces
+
+  if (str.startsWith("+")) return str;
+  if (str.startsWith("0")) return "+234" + str.slice(1);
+  if (str.startsWith("234")) return "+" + str;
+
+  return null;
+};
+
 const sendSMS = async (phone, message) => {
   try {
-    const response = await fetch(
-      `${process.env.TERMII_BASE_URL}/api/sms/send`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          api_key: process.env.TERMII_API_KEY,
-          to: phone, // 2348012345678
-          from: process.env.TERMII_SENDER_ID,
-          sms: message,
-          type: "plain",
-          channel: "generic",
-        }),
-      }
-    );
-
-    const data = await response.json();
-
-    if (data.code !== "ok") {
-      console.error("Termii SMS failed:", data);
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) {
+      console.warn("Invalid phone number:", phone);
       return false;
     }
 
-    console.log("SMS sent:", data);
+    const res = await client.messages.create({
+      body: message,
+      from: process.env.TWILIO_PHONE, // your Twilio phone number
+      to: "+2348132455551",
+    });
+
+    console.log("Twilio SMS sent:", res.sid);
     return true;
   } catch (err) {
-    console.error("SMS error:", err);
+    console.error("Twilio SMS error:", err.message);
     return false;
   }
 };
