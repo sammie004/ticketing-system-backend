@@ -14,6 +14,7 @@ const SecurityCheck = require('./routes/verify')
 const UserAuth = require('./routes/user');
 const getDash = require('./routes/getDash')
 const createTicketRoute = require('./routes/create-ticket');
+const creatorDash = require('./routes/creator-dash');
 
 // route usages
 app.get('/', (req, res) => {
@@ -24,7 +25,9 @@ app.use("/events", eventRoutes)
 app.use("/tickets", purchaseRoutes)
 app.use("/user", UserAuth)
 app.use('/security', SecurityCheck)
+app.use("/uploads", express.static("uploads"));
 app.use('/stats', getDash)
+app.use('/creator', creatorDash)
 app.use('/create-ticket', createTicketRoute);
 
 

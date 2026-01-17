@@ -1,8 +1,12 @@
 const db = require('../connection/connection');
+const upload = require('../middleware/upload');
 
 const CreateEvent = (req, res) => {
     const creator_id = req.user.user_id
-    const{event_name, event_date, location} = req.body
+    const { event_name, event_date, location } = req.body
+    const image_url = req.file
+    ? `/uploads/events/${req.file.filename}`
+    : null;
     if (!creator_id) {
         console.log(`No creator id found`)
         return res.status(400).json({message:`no creator id found!`})
@@ -15,8 +19,8 @@ const CreateEvent = (req, res) => {
             console.log(`This event has already been created`)
             return res.status(409).json({message:`This event has already been created`})
         } else {
-            const query1 = `insert into events (creator_id, event_name, event_date, location) values (?, ?, ?, ?)`
-    db.query(query1, [creator_id, event_name, event_date, location], (err, result) => {
+            const query1 = `insert into events (creator_id, event_name, event_date, location, image_url) values (?, ?, ?, ?,?)`
+    db.query(query1, [creator_id, event_name, event_date, location,image_url], (err, result) => {
         if (err) {
             console.log(`an error occured`, err)
             return res.status(500).json({message:`internal server error`, err})

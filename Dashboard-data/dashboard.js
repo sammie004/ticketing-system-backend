@@ -27,7 +27,8 @@ const getDashboardData = (req, res) => {
             FROM payments
             WHERE event_id = ? AND status = 'success'
             GROUP BY ticket_type
-        `
+        `,
+    
     };
 
     db.query(queries.totalTickets, [event_id], (err, totalTickets) => {
@@ -38,6 +39,7 @@ const getDashboardData = (req, res) => {
 
             db.query(queries.totalRevenue, [event_id], (err, revenue) => {
                 if (err) return res.status(500).json({ message: "Error fetching revenue", err });
+                
 
                 db.query(queries.ticketBreakdown, [event_id], (err, breakdown) => {
                     if (err) return res.status(500).json({ message: "Error fetching breakdown", err });

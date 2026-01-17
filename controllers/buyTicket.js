@@ -152,7 +152,7 @@ const sendTicketsPDF = async (user_name, user_email, event_id, ticket_type, tick
       // ---------- VIP / Ticket Type ----------
       page.drawText(ticket_type.toUpperCase(), { x: 150, y: height - 70, size: 28, font: fontBold, color: rgb(1, 1, 1) });
 
-      // ---------- Middle white box for ticket/event name ----------
+      // -------- Middle white box for ticket/event name ----------
       page.drawRectangle({
         x: 20,
         y: height - 280,
@@ -164,7 +164,7 @@ const sendTicketsPDF = async (user_name, user_email, event_id, ticket_type, tick
       page.drawText("TICKET NAME", { x: 30, y: height - 230, size: 16, font: fontBold, color: rgb(0.55, 0.2, 0.75) });
       page.drawText(event_name, { x: 30, y: height - 250, size: 12, font: fontRegular, color: rgb(0.3, 0.3, 0.3) });
 
-      // ---------- Details section ----------
+      // --------- Details section ----------
       page.drawText(`Name: ${user_name}`, { x: 30, y: height - 310, size: 12, font: fontRegular, color: rgb(1, 1, 1) });
       page.drawText(`Code: ${ticket[2]}`, { x: 30, y: height - 330, size: 12, font: fontRegular, color: rgb(1, 1, 1) });
 

@@ -1,8 +1,11 @@
 const express = require("express")
 const protect = require("../middleware/middleware")
+const upload = require("../middleware/upload")
 const router = express.Router()
 const { CreateEvent, cancelEvent, reActivate } = require("../controllers/event-creation")
-router.post("/create-event", protect, CreateEvent)
+const {getEventAttendees} = require("../controllers/get-event-attendees")
+router.post("/create-event", protect,upload.single("image"),CreateEvent)
 router.put("/cancel-event", protect, cancelEvent)
+router.get("/get-attendees/:event_id", protect, getEventAttendees)
 router.put("/reactivate-event", protect, reActivate)
 module.exports = router
