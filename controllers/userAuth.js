@@ -1,73 +1,77 @@
 const db = require('../connection/connection')
-const bcrpyt = require('bcrypt')
+const bcrypt = require('bcrypt')
 const jwt = require("jsonwebtoken")
 const dotenv = require("dotenv")
 dotenv.config()
 
 // signup route
 const SignUp = (req, res) => {
-    const { name, email, password, phone_number} = req.body
+    const { name, email, password, phone_number } = req.body
     if (!email || !password) {
-        console.log(`email and password required`)
-        return res.status(404).json({ message: `Those fields cant be left empty` })
+        return res.status(400).json({ message: `Email and password are required` })
     }
-    // check if the user already exists
-    const query1 = `select * from event_attendees where email =?`
+
+    const query1 = `SELECT * FROM event_attendees WHERE email = ?`
     db.query(query1, [email], async (err, results) => {
         if (err) {
-            console.log(`an error occured`, err)
-            return res.status(500).json({ message: `internal server error`, err })
-        } else if (results.length > 0) {
-            console.log(`this user already exists`)
-            return res.status(409).json({ message: `this user already exists` })
-        } else {
-            const query2 = `insert into event_attendees (name, email, password, phone_number) values (?, ?, ?, ?)`
-            const hashed_password = await bcrpyt.hash(password, 10)
-            db.query(query2, [name, email, hashed_password, phone_number], (err, result) => {
-                if (err) {
-                    console.log(`an error occured`, err)
-                    return res.status(500).json({ message: `internal server error`, err })
-                } else {
-                    console.log(`user created successfully`)
-                    return res.status(201).json({ message: `user created successfully` })
-                }
-            })
+            console.error(`SignUp DB error:`, err)
+            return res.status(500).json({ message: `Internal server error`, err })
         }
+        if (results.length > 0) {
+            return res.status(409).json({ message: `An account with this email already exists` })
+        }
+
+        const hashed_password = await bcrypt.hash(password, 10)
+        const query2 = `INSERT INTO event_attendees (name, email, password, phone_number) VALUES (?, ?, ?, ?)`
+        db.query(query2, [name, email, hashed_password, phone_number], (err) => {
+            if (err) {
+                console.error(`SignUp insert error:`, err)
+                return res.status(500).json({ message: `Internal server error`, err })
+            }
+            return res.status(201).json({ message: `Account created successfully` })
+        })
     })
 }
 
 
-// login controller setuop
-const Login = (req, res) => {
+// login controller
+const Login = async (req, res) => {
     const { email, password } = req.body
     if (!email || !password) {
-        console.log(`those fields are required`)
-        return res.status(400).json({message:`Those fields cant be left empty`})
-    } else {
-        const query2 = `select * from event_attendees where email = ?`
-        db.query(query2, [email], (err, results) => {
-            if (err) {
-                console.log(`an error occured`, err)
-                return res.status(500).json({message:`internal server error`})
-            } else {
-                if (results.length === 0) {
-                    console.log(`No user found with this email \n Please try again!`)
-                    return res.status(404).json({ message:`No user found with this email \n Please try again!`})
-                }
-                const user = results[0]
-                const match = bcrpyt.compare(password, user.password)
-                if (!match) {
-                    console.log(`invalid email or password`)
-                    return res.status(400).json({message:`invalid email or password`})
-                } else {
-                    const token = jwt.sign({ user_id: user.user_id, email: user.email , name:user.name}, process.env.JWT_SECRET, { expiresIn: '1h' })
-                    console.log(`login successful`)
-                    return res.status(200).json({message:`welcome back user ${email}`,email:user.email,token})
-                }
-            }
-        })
+        return res.status(400).json({ message: `Email and password are required` })
     }
+
+    const query = `SELECT * FROM event_attendees WHERE email = ?`
+    db.query(query, [email], async (err, results) => {
+        if (err) {
+            console.error(`Login DB error:`, err)
+            return res.status(500).json({ message: `Internal server error` })
+        }
+        if (results.length === 0) {
+            return res.status(404).json({ message: `No account found with this email` })
+        }
+
+        const user = results[0]
+
+        // ✅ FIXED: bcrypt.compare is async — must be awaited
+        const match = await bcrypt.compare(password, user.password)
+        if (!match) {
+            return res.status(401).json({ message: `Invalid email or password` })
+        }
+
+        const token = jwt.sign(
+            { user_id: user.id, email: user.email, name: user.name },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+        )
+
+        return res.status(200).json({
+            message: `Welcome back, ${user.name}`,
+            email: user.email,
+            name: user.name,
+            token,
+        })
+    })
 }
-module.exports = {
-    SignUp,Login
-}
+
+module.exports = { SignUp, Login }

@@ -17,6 +17,10 @@ const createTicketRoute = require('./routes/create-ticket');
 const creatorDash = require('./routes/creator-dash');
 
 // route usages
+app.use((req, res, next) => {
+    res.setHeader("Accept", "application/json");
+    next();
+});
 app.get('/', (req, res) => {
     res.send("welcome to the ticketing system backend")
 })

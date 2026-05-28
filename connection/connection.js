@@ -3,7 +3,7 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const pool = mysql.createPool({
+const db = mysql.createPool({
     connectionLimit: 10, // max concurrent DB connections
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -13,7 +13,7 @@ const pool = mysql.createPool({
 });
 
 // Optional: test the pool once on startup
-pool.getConnection((err, connection) => {
+db.getConnection((err, connection) => {
     if (err) {
         console.error('❌ Database connection failed:', err);
     } else {
@@ -22,4 +22,4 @@ pool.getConnection((err, connection) => {
     }
 });
 
-module.exports = pool;
+module.exports = db;

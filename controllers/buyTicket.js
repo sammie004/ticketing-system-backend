@@ -1,209 +1,466 @@
-//Dependencies 
-const crypto = require("crypto");
-const db = require("../connection/connection");
-const fs = require("fs");
-const path = require("path");
+const crypto     = require("crypto");
+const db         = require("../connection/connection");
+const fs         = require("fs");
+const path       = require("path");
+const https      = require("https");
+const http       = require("http");
 const { PDFDocument, rgb, StandardFonts } = require("pdf-lib");
-const QRCode = require("qrcode");
-const bwipjs = require("bwip-js");
+const QRCode     = require("qrcode");
+const bwipjs     = require("bwip-js");
 const nodemailer = require("nodemailer");
-const twilio = require("twilio");
-const {sendSMS} = require("../smsLogic/sms");
+const twilio     = require("twilio");
+const { sendSMS } = require("../smsLogic/sms");
 
-/**
- * 1️⃣ INITIALIZE PAYMENT
- */
+// ─────────────────────────────────────────────
+// 1. INITIALIZE PAYMENT
+// ─────────────────────────────────────────────
 const buyTicket = async (req, res) => {
-  const { user_id, name: user_name, email: user_email } = req.user;
-  const event_id = req.params.id;
+  const user_id    = req.user.user_id || req.user.id;
+  const user_name  = req.user.name;
+  const user_email = req.user.email;
+  const event_id   = req.params.id;
   const { ticket_type, quantity } = req.body;
 
-  if (!ticket_type || !quantity) {
+  if (!user_id)
+    return res.status(401).json({ message: "User ID missing from token. Please log in again." });
+  if (!ticket_type || !quantity)
     return res.status(400).json({ message: "Ticket type and quantity are required" });
-  }
 
   try {
     db.query(
-      `SELECT * FROM ticket_types 
-       WHERE event_id = ? AND ticket_type = ? AND is_active = 1`,
+      `SELECT * FROM ticket_types WHERE event_id = ? AND name = ? AND is_active = 1`,
       [event_id, ticket_type],
       async (err, results) => {
         if (err) return res.status(500).json({ message: "DB error", err });
-        if (results.length === 0)
-          return res.status(404).json({ message: "Ticket type not found" });
+        if (!results.length) return res.status(404).json({ message: "Ticket type not found" });
 
         const ticket = results[0];
-
-        if (ticket.quantity < quantity) {
-          return res.status(400).json({ message: `Only ${ticket.quantity} tickets left for this type` });
-        }
+        if (ticket.quantity < quantity)
+          return res.status(400).json({ message: `Only ${ticket.quantity} tickets left` });
 
         const reference = crypto.randomUUID();
-
-        // Initialize Paystack payment
-        const response = await fetch("https://api.paystack.co/transaction/initialize", {
+        const response  = await fetch("https://api.paystack.co/transaction/initialize", {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-            "Content-Type": "application/json",
-          },
+          headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
             email: user_email,
-            amount: ticket.price * quantity * 100, // multiply by quantity
+            amount: ticket.price * quantity * 100,
             reference,
             metadata: { user_id, event_id, ticket_type, user_name, quantity },
             callback_url: `${process.env.FRONTEND_URL}/payment-success`,
           }),
         });
-
         const data = await response.json();
         if (!data.status) return res.status(400).json({ message: "Payment init failed" });
-
-        res.status(200).json({
-          authorization_url: data.data.authorization_url,
-          reference,
-        });
+        res.status(200).json({ authorization_url: data.data.authorization_url, reference });
       }
     );
-  } catch (error) {
+  } catch (e) {
     res.status(500).json({ message: "Payment initialization error" });
   }
 };
 
-/**
- * 2️⃣ VERIFY PAYMENT + SAVE PAYMENT + CREATE TICKETS
- */
-
-const generateTicketPDF = (ticket, event_name) => {
-  return new Promise((resolve, reject) => {
-    const ticketsDir = path.join(__dirname, "../tickets");
-    if (!fs.existsSync(ticketsDir)) fs.mkdirSync(ticketsDir);
-
-    const filePath = path.join(ticketsDir, `${ticket.ticket_reference}.pdf`);
-    const doc = new PDFDocument();
-
-    doc.pipe(fs.createWriteStream(filePath));
-    doc.fontSize(20).text(`Event Ticket`, { align: "center" });
-    doc.moveDown();
-    doc.fontSize(16).text(`Event: ${event_name}`);
-    doc.text(`Ticket Type: ${ticket.ticket_type}`);
-    doc.text(`Ticket Reference: ${ticket.ticket_reference}`);
-    doc.text(`Name: ${ticket.user_name}`);
-    doc.text(`Amount Paid: ₦${ticket.amount_paid}`);
-    doc.end();
-
-    doc.on("finish", () => resolve(filePath));
-    doc.on("error", reject);
-  });
-};
-
-/**
- * HELPER: Send ticket email
- */
-// Configure nodemailer
+// ─────────────────────────────────────────────
+// NODEMAILER
+// ─────────────────────────────────────────────
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: process.env.SMTP_PORT,
+  host: process.env.SMTP_HOST, port: process.env.SMTP_PORT,
   secure: process.env.SMTP_SECURE === "true",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
+  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
 });
 
-// Normalize Phone number
 const normalizePhone = (phone) => {
-  if (!phone) return ""; // handle null/undefined
-  const strPhone = String(phone).trim();
-  if (!strPhone) return "";
-  if (strPhone.startsWith("+")) return strPhone;
-  return "+234" + strPhone.replace(/^0/, "");
+  if (!phone) return "";
+  const s = String(phone).trim();
+  if (!s) return "";
+  return s.startsWith("+") ? s : "+234" + s.replace(/^0/, "");
 };
 
-// -----------------------------
-// PDF generation & email
-// -----------------------------
-const sendTicketsPDF = async (user_name, user_email, event_id, ticket_type, ticketsData, event_name) => {
+// ─────────────────────────────────────────────
+// HELPER — fetch remote image as buffer
+// ─────────────────────────────────────────────
+const fetchImageBuffer = (url) => new Promise((resolve, reject) => {
+  const client = url.startsWith("https") ? https : http;
+  client.get(url, (res) => {
+    const chunks = [];
+    res.on("data", chunk => chunks.push(chunk));
+    res.on("end",  ()    => resolve(Buffer.concat(chunks)));
+    res.on("error", reject);
+  }).on("error", reject);
+});
+
+// ─────────────────────────────────────────────
+// PDF HELPERS
+// ─────────────────────────────────────────────
+const rr = (page, x, y, w, h, r, col) => {
+  r = Math.min(r, w/2, h/2);
+  page.drawRectangle({ x:x+r, y,     width:w-2*r, height:h,     color:col });
+  page.drawRectangle({ x,     y:y+r, width:w,     height:h-2*r, color:col });
+  [[x+r,y+r],[x+w-r,y+r],[x+r,y+h-r],[x+w-r,y+h-r]].forEach(([cx,cy]) =>
+    page.drawEllipse({ x:cx, y:cy, xScale:r, yScale:r, color:col })
+  );
+};
+
+const ctr = (page, text, y, size, font, color, ox, ow) => {
+  const tw = font.widthOfTextAtSize(text, size);
+  page.drawText(text, { x: ox + (ow - tw)/2, y, size, font, color });
+};
+
+const trunc = (font, text, size, max) => {
+  if (font.widthOfTextAtSize(text, size) <= max) return text;
+  while (text.length > 1 && font.widthOfTextAtSize(text+"...", size) > max) text = text.slice(0,-1);
+  return text+"...";
+};
+
+// wrap text into lines that fit maxWidth
+const wrapText = (font, text, size, maxWidth) => {
+  const words = (text || "").split(" ");
+  const lines = [];
+  let   line  = "";
+  for (const word of words) {
+    const test = line ? line + " " + word : word;
+    if (font.widthOfTextAtSize(test, size) <= maxWidth) {
+      line = test;
+    } else {
+      if (line) lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+};
+
+const gradBg = (page, x, y, w, h) => {
+  const steps = 80;
+  for (let i = 0; i < steps; i++) {
+    const t = i/steps;
+    page.drawRectangle({
+      x, y: y + i*(h/steps), width: w, height: h/steps + 1,
+      color: rgb(0.031 + t*0.06, 0.031 + t*0.01, 0.16 + t*0.14)
+    });
+  }
+};
+
+// ─────────────────────────────────────────────
+// PDF GENERATION — landscape two-panel ticket
+// ─────────────────────────────────────────────
+const sendTicketsPDF = async (
+  user_name, user_email, event_id, ticket_type, ticketsData, event_name,
+  event_description, poster_image_url
+) => {
   try {
     const pdfDoc = await PDFDocument.create();
-    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fBold  = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const fReg   = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    for (const ticket of ticketsData) {
-      const page = pdfDoc.addPage([300, 600]);
-      const { width, height } = page.getSize();
+    const C = {
+      purpleL:    rgb(0.50, 0.30, 0.95),
+      purplePill: rgb(0.40, 0.20, 0.88),
+      purpleText: rgb(0.38, 0.20, 0.85),
+      white:      rgb(1,    1,    1   ),
+      offWhite:   rgb(0.97, 0.97, 0.99),
+      dark:       rgb(0.08, 0.08, 0.20),
+      mid:        rgb(0.30, 0.30, 0.42),
+      muted:      rgb(0.55, 0.55, 0.68),
+      divider:    rgb(0.87, 0.87, 0.93),
+      darkBand:   rgb(0.07, 0.07, 0.20),
+      iconTint:   rgb(0.72, 0.72, 0.92),
+      overlay:    rgb(0.04, 0.04, 0.16),  // dark overlay on top of poster
+    };
 
-      // ---------- Rounded gradient background ----------
-      const gradientSteps = 100;
-      for (let i = 0; i < gradientSteps; i++) {
-        const t = i / gradientSteps;
-        const r = 0.8 * (1 - t) + 0.55 * t; // purple gradient
-        const g = 0.3 * (1 - t) + 0.2 * t;
-        const b = 0.95 * (1 - t) + 0.75 * t;
-        page.drawRectangle({ x: 0, y: i * (height / gradientSteps), width, height: height / gradientSteps, color: rgb(r, g, b) });
+    const PW = 760, PH = 560;
+    const LW = 460;
+    const RW = PW - LW;
+    const SEP = LW;
+    const LP  = 24;
+    const BAND_H  = 68;
+    const WHITE_H = 188;
+    const RC_L = SEP + 18;
+    const RC_R = PW  - 18;
+    const RC_W = RC_R - RC_L;
+
+    // ── try to fetch & embed the poster image once (shared across all tickets) ──
+    let posterImg = null;
+    if (poster_image_url) {
+      try {
+        const buf = await fetchImageBuffer(poster_image_url);
+        // detect jpeg vs png by magic bytes
+        const isPng = buf[0] === 0x89 && buf[1] === 0x50;
+        posterImg   = isPng
+          ? await pdfDoc.embedPng(buf)
+          : await pdfDoc.embedJpg(buf);
+      } catch (e) {
+        console.warn("Could not embed poster image:", e.message);
       }
-
-      // ---------- Top QR Code ----------
-      const qrDataUrl = await QRCode.toDataURL(ticket[2]);
-      const qrBytes = Buffer.from(qrDataUrl.split(",")[1], "base64");
-      const qrImage = await pdfDoc.embedPng(qrBytes);
-      page.drawImage(qrImage, { x: 30, y: height - 150, width: 100, height: 100 });
-
-      // ---------- VIP / Ticket Type ----------
-      page.drawText(ticket_type.toUpperCase(), { x: 150, y: height - 70, size: 28, font: fontBold, color: rgb(1, 1, 1) });
-
-      // -------- Middle white box for ticket/event name ----------
-      page.drawRectangle({
-        x: 20,
-        y: height - 280,
-        width: width - 40,
-        height: 100,
-        color: rgb(1, 1, 1),
-        borderRadius: 5,
-      });
-      page.drawText("TICKET NAME", { x: 30, y: height - 230, size: 16, font: fontBold, color: rgb(0.55, 0.2, 0.75) });
-      page.drawText(event_name, { x: 30, y: height - 250, size: 12, font: fontRegular, color: rgb(0.3, 0.3, 0.3) });
-
-      // --------- Details section ----------
-      page.drawText(`Name: ${user_name}`, { x: 30, y: height - 310, size: 12, font: fontRegular, color: rgb(1, 1, 1) });
-      page.drawText(`Code: ${ticket[2]}`, { x: 30, y: height - 330, size: 12, font: fontRegular, color: rgb(1, 1, 1) });
-
-     
-      // Optional: simulate cutouts at top/bottom with white rectangles
-      page.drawRectangle({ x: width / 2 - 15, y: height - 10, width: 30, height: 20, color: rgb(1, 1, 1) }); // top notch
-      // page.drawRectangle({ x: width / 2 - 15, y: 0, width: 30, height: 20, color: rgb(1, 1, 1) }); // bottom notch
     }
 
-    // ---------- Save PDF ----------
-    const pdfBytes = await pdfDoc.save();
+    // ── prepare description lines (max 2 lines, fits subtitle slot) ──
+    const descText  = event_description
+      ? event_description.replace(/\n/g, " ").trim()
+      : "Join us for an unforgettable experience.";
+    const DESC_SIZE = 9.5;
+    const DESC_MAX  = LW - LP*2 - 10;
+    const descLines = wrapText(fReg, descText, DESC_SIZE, DESC_MAX).slice(0, 2); // max 2 lines
+
+    for (const ticket of ticketsData) {
+      const ref      = ticket[2];
+      const shortRef = ref.split("-")[0].toUpperCase();
+      const page     = pdfDoc.addPage([PW, PH]);
+
+      // ══ LEFT PANEL ════════════════════════════
+
+      // 1. gradient base
+      gradBg(page, 0, 0, LW, PH);
+
+      // 2. poster image — fills the hero area above the white section
+      //    drawn AFTER gradient so it sits on top; dark overlay keeps text readable
+      const HERO_BOTTOM = BAND_H + WHITE_H;   // where white section ends
+      const HERO_H      = PH - HERO_BOTTOM;   // hero area height
+
+      if (posterImg) {
+        // stretch to fill the hero region of the left panel
+        page.drawImage(posterImg, {
+          x: 0, y: HERO_BOTTOM,
+          width: LW, height: HERO_H,
+          opacity: 0.55,   // semi-transparent so gradient still shows through
+        });
+      }
+
+      // 3. dark gradient overlay so text stays legible over any poster
+      for (let i = 0; i < 30; i++) {
+        const t = i / 30;
+        page.drawRectangle({
+          x: 0, y: HERO_BOTTOM + i*(HERO_H/30),
+          width: LW, height: HERO_H/30 + 1,
+          color: rgb(0.04, 0.04, 0.14),
+          opacity: 0.55 - t*0.45,   // fade from opaque at bottom to transparent at top
+        });
+      }
+
+      // subtle glow
+      [0,1,2].forEach(i => page.drawEllipse({
+        x: LW*0.65, y: PH*0.55,
+        xScale: 90+i*28, yScale: 70+i*20,
+        color: rgb(0.28, 0.10, 0.65), opacity: 0.04
+      }));
+
+      // brand bar
+      const BRAND_Y = PH - 48;
+      rr(page, LP, BRAND_Y-6, 26, 26, 5, C.purpleL);
+      page.drawText("E",                { x:LP+7,  y:BRAND_Y+4,  size:14,  font:fBold, color:C.white    });
+      page.drawText("EVENTPASS",        { x:LP+32, y:BRAND_Y+6,  size:10,  font:fBold, color:C.white    });
+      page.drawText("LIVE EXPERIENCES", { x:LP+32, y:BRAND_Y-6,  size:6.5, font:fReg,  color:C.iconTint });
+
+      // E-TICKET pill
+      const PILL_W = 82, PILL_H = 24;
+      const PILL_X = LW - LP - PILL_W;
+      rr(page, PILL_X, BRAND_Y-4, PILL_W, PILL_H, 12, C.purplePill);
+      ctr(page, "E-TICKET", BRAND_Y+6, 9, fBold, C.white, PILL_X, PILL_W);
+
+      // event name — two lines
+      const NAME_Y = PH - 104;
+      const words  = event_name.toUpperCase().split(" ");
+      const wmid   = Math.ceil(words.length/2);
+      page.drawText(trunc(fBold, words.slice(0,wmid).join(" "), 36, LW-LP*2), { x:LP, y:NAME_Y,    size:36, font:fBold, color:C.white });
+      page.drawText(trunc(fBold, words.slice(wmid).join(" "),   36, LW-LP*2), { x:LP, y:NAME_Y-44, size:36, font:fBold, color:C.white });
+
+      // ── DESCRIPTION replaces hardcoded subtitle ──
+      const SUB_Y = NAME_Y - 72;
+      descLines.forEach((ln, i) => {
+        page.drawText(ln, {
+          x: LP, y: SUB_Y - i*14,
+          size: DESC_SIZE, font: fReg, color: C.iconTint,
+        });
+      });
+      // purple underline after description
+      const RULE_Y = SUB_Y - descLines.length * 14 - 4;
+      page.drawLine({ start:{x:LP, y:RULE_Y}, end:{x:LP+196, y:RULE_Y}, thickness:1.5, color:C.purpleL });
+
+      // detail rows
+      const ICON_X = LP;
+      const TEXT_X = LP + 28;
+      let   DET_Y  = RULE_Y - 20;
+
+      const detRow = (drawIcon, bold, soft) => {
+        drawIcon(ICON_X, DET_Y);
+        page.drawText(bold, { x:TEXT_X, y:DET_Y,    size:10,  font:fBold, color:C.white    });
+        if (soft) page.drawText(soft, { x:TEXT_X, y:DET_Y-13, size:8.5, font:fReg, color:C.iconTint });
+        DET_Y -= soft ? 42 : 34;
+      };
+
+      // calendar icon
+      detRow((x,y) => {
+        rr(page, x, y-2, 18, 15, 2, C.iconTint);
+        page.drawRectangle({ x:x+1, y:y+6, width:16, height:6, color:C.white });
+        page.drawLine({ start:{x:x+5,  y:y+13}, end:{x:x+5,  y:y+11}, thickness:1.5, color:C.darkBand });
+        page.drawLine({ start:{x:x+13, y:y+13}, end:{x:x+13, y:y+11}, thickness:1.5, color:C.darkBand });
+      }, ticket_type.toUpperCase()+" TICKET");
+
+      // clock icon
+      detRow((x,y) => {
+        page.drawEllipse({ x:x+9, y:y+7, xScale:9, yScale:9, borderColor:C.iconTint, borderWidth:1.5, color:rgb(0,0,0) });
+        page.drawLine({ start:{x:x+9, y:y+7},  end:{x:x+9,  y:y+12}, thickness:1.5, color:C.iconTint });
+        page.drawLine({ start:{x:x+9, y:y+7},  end:{x:x+13, y:y+7 }, thickness:1.5, color:C.iconTint });
+      }, "Present QR code at entrance");
+
+      // pin icon
+      detRow((x,y) => {
+        page.drawEllipse({ x:x+9, y:y+10, xScale:7, yScale:7, borderColor:C.iconTint, borderWidth:1.5, color:rgb(0,0,0) });
+        page.drawLine({ start:{x:x+9, y:y+3}, end:{x:x+9, y:y}, thickness:2, color:C.iconTint });
+      }, "Non-transferable ticket", "One entry per QR code");
+
+      // white section
+      const WS_Y   = BAND_H;
+      const WS_TOP = WS_Y + WHITE_H;
+      page.drawRectangle({ x:0, y:WS_Y, width:LW, height:WHITE_H, color:C.offWhite });
+
+      page.drawText("EVENT DETAILS", { x:LP, y:WS_TOP-22, size:11, font:fBold, color:C.purpleText });
+      page.drawLine({ start:{x:LP, y:WS_TOP-26}, end:{x:LP+88, y:WS_TOP-26}, thickness:2, color:C.purpleText });
+
+      [
+        `Event: ${trunc(fReg, event_name, 8.5, LW-LP*2-10)}`,
+        `Type: ${ticket_type} Access`,
+        "Scan QR code at the entrance for entry.",
+      ].forEach((ln, i) =>
+        page.drawText(ln, { x:LP, y:WS_TOP-44-i*13, size:8.5, font:fReg, color:C.mid })
+      );
+
+      // entry guidelines
+      const EG_Y = WS_Y + 88;
+      page.drawText("ENTRY GUIDELINES", { x:LP, y:EG_Y,   size:10, font:fBold, color:C.purpleText });
+      page.drawLine({ start:{x:LP, y:EG_Y-4}, end:{x:LP+108, y:EG_Y-4}, thickness:1.5, color:C.purpleText });
+
+      const GL_W = Math.floor((LW - LP*2 - 6*3) / 4);
+      const GL_Y = WS_Y + 18;
+      ["Show e-ticket","Valid ID req.","No re-entry","No outside food"].forEach((g, i) => {
+        const gx = LP + i*(GL_W+6);
+        rr(page, gx, GL_Y, GL_W, 26, 4, C.divider);
+        ctr(page, g, GL_Y+9, 7, fReg, C.mid, gx, GL_W);
+      });
+
+      // dark band
+      page.drawRectangle({ x:0, y:0, width:LW, height:BAND_H, color:C.darkBand });
+      rr(page, LP, BAND_H/2-16, 32, 32, 16, C.purplePill);
+      page.drawText("*", { x:LP+11, y:BAND_H/2-4, size:14, font:fBold, color:C.white });
+      const TY_X = LP + 40;
+      page.drawText("THANK YOU!",                        { x:TY_X, y:BAND_H/2+8,  size:10, font:fBold, color:C.white    });
+      page.drawText("We can't wait to create memories.", { x:TY_X, y:BAND_H/2-6,  size:8,  font:fReg,  color:C.iconTint });
+      page.drawText("@eventpasslive  |  eventpass.com",  { x:TY_X, y:BAND_H/2-20, size:7,  font:fReg,  color:C.muted    });
+
+      // ══ RIGHT PANEL ═══════════════════════════
+      page.drawRectangle({ x:SEP, y:0, width:RW, height:PH, color:C.offWhite });
+
+      // dashed separator + notch cutouts
+      let dashY = 14;
+      while (dashY < PH-14) {
+        page.drawLine({ start:{x:SEP, y:dashY}, end:{x:SEP, y:dashY+6}, thickness:1, color:C.divider });
+        dashY += 11;
+      }
+      page.drawEllipse({ x:SEP, y:PH, xScale:11, yScale:11, color:C.offWhite });
+      page.drawEllipse({ x:SEP, y:0,  xScale:11, yScale:11, color:C.offWhite });
+
+      // TICKET ID pill
+      const TID_Y = PH - 44;
+      rr(page, RC_L, TID_Y, RC_W, 24, 6, C.purplePill);
+      ctr(page, "TICKET ID", TID_Y+8, 9, fBold, C.white, RC_L, RC_W);
+      page.drawText("EVT-"+shortRef, { x:RC_L+8, y:TID_Y-18, size:11, font:fBold, color:C.dark });
+
+      // QR code
+      const QR_SIZE   = 120;
+      const QR_PAD    = 8;
+      const QR_CARD_W = QR_SIZE + QR_PAD*2;
+      const QR_CARD_H = QR_SIZE + QR_PAD*2;
+      const QR_CARD_X = RC_L + (RC_W - QR_CARD_W)/2;
+      const QR_CARD_Y = TID_Y - 24 - QR_CARD_H;
+
+      const verifyUrl = `${process.env.BACKEND_URL}/api/security/scan/${ref}`;
+      const qrDataUrl = await QRCode.toDataURL(verifyUrl, {
+        width:220, margin:1, errorCorrectionLevel:"H",
+        color:{ dark:"#0D0D20", light:"#FFFFFF" },
+      });
+      const qrBytes = Buffer.from(qrDataUrl.split(",")[1], "base64");
+      const qrImage = await pdfDoc.embedPng(qrBytes);
+
+      rr(page, QR_CARD_X, QR_CARD_Y, QR_CARD_W, QR_CARD_H, 6, C.white);
+      page.drawImage(qrImage, { x:QR_CARD_X+QR_PAD, y:QR_CARD_Y+QR_PAD, width:QR_SIZE, height:QR_SIZE });
+
+      const SCAN_Y = QR_CARD_Y - 18;
+      ctr(page, "SCAN AT ENTRY",                             SCAN_Y,    9, fBold, C.purpleText, RC_L, RC_W);
+      ctr(page, "Each ticket is unique & non-transferable.", SCAN_Y-14, 7, fReg,  C.muted,      RC_L, RC_W);
+
+      // dashed divider across right panel
+      const DIV_Y = SCAN_Y - 28;
+      let rdX = RC_L;
+      while (rdX < RC_R) {
+        page.drawLine({ start:{x:rdX, y:DIV_Y}, end:{x:Math.min(rdX+5, RC_R), y:DIV_Y}, thickness:0.8, color:C.divider });
+        rdX += 9;
+      }
+
+      // attendee rows
+      const ICON_R  = 8;
+      const ICON_CX = RC_L + ICON_R;
+      const ROW_TX  = RC_L + ICON_R*2 + 10;
+      const ROW_TW  = RC_R - ROW_TX;
+      let   RY      = DIV_Y - 26;
+
+      const rightRow = (label, value) => {
+        page.drawEllipse({ x:ICON_CX, y:RY+4, xScale:ICON_R, yScale:ICON_R, color:C.divider });
+        page.drawText(label, { x:ROW_TX, y:RY+10, size:7.5, font:fBold, color:C.purpleText });
+        page.drawText(trunc(fBold, value, 11, ROW_TW), { x:ROW_TX, y:RY-2, size:11, font:fBold, color:C.dark });
+        RY -= 34;
+        page.drawLine({ start:{x:RC_L, y:RY+14}, end:{x:RC_R, y:RY+14}, thickness:0.4, color:C.divider });
+      };
+
+      rightRow("ATTENDEE",    user_name);
+      rightRow("TICKET TYPE", ticket_type+" Access");
+      rightRow("ACCESS LEVEL",ticket_type);
+      rightRow("REF CODE",    shortRef);
+
+      // barcode
+      try {
+        const barBuf = await bwipjs.toBuffer({ bcid:"code128", text:shortRef, scale:2, height:12 });
+        const barImg = await pdfDoc.embedPng(barBuf);
+        page.drawImage(barImg, { x:RC_L, y:28, width:RC_W, height:38 });
+      } catch(e) {
+        rr(page, RC_L, 28, RC_W, 38, 3, C.divider);
+      }
+      ctr(page, shortRef, 10, 8, fReg, C.muted, RC_L, RC_W);
+    }
+
+    // save & email
+    const pdfBytes   = await pdfDoc.save();
     const ticketsDir = path.join(__dirname, "../tickets");
     if (!fs.existsSync(ticketsDir)) fs.mkdirSync(ticketsDir);
     const pdfPath = path.join(ticketsDir, `${crypto.randomUUID()}.pdf`);
     fs.writeFileSync(pdfPath, pdfBytes);
 
-    // ---------- Send email ----------
     if (process.env.SKIP_EMAIL !== "true") {
       await transporter.sendMail({
-        from: process.env.SMTP_USER,
-        to: user_email,
+        from: process.env.SMTP_USER, to: user_email,
         subject: `Your Tickets for ${event_name}`,
-        text: `Hello ${user_name},\n\nAttached are your tickets for the event.`,
-        attachments: [{ filename: "tickets.pdf", path: pdfPath }],
+        html: `
+          <div style="font-family:sans-serif;max-width:520px;margin:auto;padding:40px 32px;background:#f7f7fb;border-radius:8px;">
+            <h2 style="color:#3314DD;margin:0 0 6px;">You're in! 🎉</h2>
+            <p style="color:#333;font-size:15px;">Hi <strong>${user_name}</strong>, your ticket${ticketsData.length>1?"s are":" is"} attached.</p>
+            <p style="color:#555;font-size:14px;line-height:1.6;">Open the PDF and <strong>show the QR code</strong> at the entrance for instant entry.</p>
+            <hr style="border:none;border-top:1px solid #ddd;margin:24px 0;">
+            <p style="color:#999;font-size:12px;">See you at <em>${event_name}</em>!</p>
+          </div>`,
+        attachments: [{ filename:"tickets.pdf", path:pdfPath }],
       });
       try { fs.unlinkSync(pdfPath); } catch(e) {}
       console.log(`Tickets emailed to ${user_email}`);
     } else {
-      console.log(`SKIP_EMAIL=true, PDF written to ${pdfPath}`);
+      console.log(`SKIP_EMAIL=true — PDF at ${pdfPath}`);
     }
   } catch (err) {
     console.error("Error generating ticket PDF:", err);
   }
 };
 
-
-// -----------------------------
-// Payment verification & ticket creation
-// -----------------------------
+// ─────────────────────────────────────────────
+// 2. VERIFY PAYMENT + SAVE + CREATE TICKETS
+// ─────────────────────────────────────────────
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 const verifyPayment = async (req, res) => {
@@ -211,115 +468,96 @@ const verifyPayment = async (req, res) => {
   if (!reference) return res.status(400).json({ message: "Reference is required" });
 
   try {
-    // ------------------- Verify payment -------------------
     const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
       headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
     });
     const data = await response.json();
-
-    if (!data.status || data.data.status !== "success") {
+    if (!data.status || data.data.status !== "success")
       return res.status(400).json({ message: "Payment not successful" });
-    }
 
-    const { event_id, ticket_type, user_id, user_name, quantity } = data.data.metadata;
-    const user_email = data.data.customer.email;
+    const { ticket_type, user_name, quantity } = data.data.metadata;
+    const user_id           = parseInt(data.data.metadata.user_id,  10);
+    const event_id          = parseInt(data.data.metadata.event_id, 10);
+    const user_email        = data.data.customer.email;
     const total_amount_paid = data.data.amount / 100;
 
+    if (!user_id || isNaN(user_id)) {
+      console.error("verifyPayment: user_id missing", data.data.metadata);
+      return res.status(400).json({ message: "Invalid metadata: user_id missing. Please log in again." });
+    }
     if (!quantity || quantity < 1) return res.status(400).json({ message: "Invalid ticket quantity" });
 
-    // ------------------- DB transaction -------------------
     db.getConnection(async (err, connection) => {
       if (err) return res.status(500).json({ message: "DB connection error", err });
-
       try {
-        await new Promise((resolve, reject) => connection.beginTransaction(err => (err ? reject(err) : resolve())));
+        await new Promise((res,rej) => connection.beginTransaction(e => e ? rej(e) : res()));
 
-        // ---- Save payment ----
-        await new Promise((resolve, reject) => {
-          const paymentQuery = `
-            INSERT INTO payments (reference, user_id, event_id, ticket_type, quantity, amount, status, payment_gateway)
-            VALUES (?, ?, ?, ?, ?, ?, 'success', 'paystack')
-          `;
-          connection.query(paymentQuery, [reference, user_id, event_id, ticket_type, quantity, total_amount_paid], (err) =>
-            err ? reject(err) : resolve()
-          );
-        });
+        await new Promise((res,rej) => connection.query(
+          `INSERT INTO payments (reference,user_id,event_id,ticket_type,amount,status,paid_at) VALUES (?,?,?,?,?,?,NOW())`,
+          [reference,user_id,event_id,ticket_type,total_amount_paid,"success"],
+          e => e ? rej(e) : res()
+        ));
 
-        // ---- Decrement ticket quantity ----
-        const resultQty = await new Promise((resolve, reject) => {
-          const updateQty = `
-            UPDATE ticket_types SET quantity = quantity - ?
-            WHERE event_id = ? AND ticket_type = ? AND quantity >= ?
-          `;
-          connection.query(updateQty, [quantity, event_id, ticket_type, quantity], (err, result) =>
-            err ? reject(err) : resolve(result)
-          );
-        });
-        if (resultQty.affectedRows === 0) throw new Error("Not enough tickets available");
+        const rQty = await new Promise((res,rej) => connection.query(
+          `UPDATE ticket_types SET quantity=quantity-? WHERE event_id=? AND name=? AND quantity>=?`,
+          [quantity,event_id,ticket_type,quantity],
+          (e,r) => e ? rej(e) : res(r)
+        ));
+        if (rQty.affectedRows === 0) throw new Error("Not enough tickets available");
 
-        // ---- Create tickets ----
         const ticketsData = Array.from({ length: quantity }, () => [
-          event_id,
-          user_id,
-          crypto.randomUUID(),
-          ticket_type,
-          "unused",
-          user_name,
-          user_email,
+          event_id, user_id, crypto.randomUUID(),
+          ticket_type, "unused", user_name, user_email,
           total_amount_paid / quantity,
         ]);
 
-        await new Promise((resolve, reject) => {
-          const ticketQuery = `
-            INSERT INTO tickets (event_id, user_id, ticket_reference, ticket_type, status, user_name, user_email, amount_paid)
-            VALUES ?
-          `;
-          connection.query(ticketQuery, [ticketsData], (err) => (err ? reject(err) : resolve()));
+        await new Promise((res,rej) => connection.query(
+          `INSERT INTO tickets (event_id,user_id,ticket_reference,ticket_type,status,user_name,user_email,amount_paid) VALUES ?`,
+          [ticketsData], e => e ? rej(e) : res()
+        ));
+
+        connection.commit(err => {
+          if (err) return connection.rollback(() => connection.release());
+          connection.release();
+
+          res.status(200).json({
+            message: "Payment verified & tickets issued. PDF will be emailed shortly!",
+            ticket_count: quantity,
+            payment_reference: reference,
+          });
+
+          // ── fetch event details (name + description + poster) for the PDF ──
+          db.query(
+            `SELECT event_name, description, poster_image FROM events WHERE id = ?`,
+            [event_id],
+            (err, rows) => {
+              const event        = rows?.[0] ?? {};
+              const event_name   = event.event_name   ?? "Unknown Event";
+              const description  = event.description  ?? null;
+              const poster_image = event.poster_image ?? null;
+
+              db.query(`SELECT phone_number FROM event_attendees WHERE id=?`, [user_id], (err, rows) => {
+                const phone = rows?.[0]?.phone_number ?? null;
+                if (phone) {
+                  const n = normalizePhone(phone);
+                  if (n) sendSMS(n,
+                    `Ticket Confirmed!\nEvent: ${event_name}\nType: ${ticket_type}, Qty: ${quantity}\nCode: ${ticketsData[0][2]}${quantity>1?` +${quantity-1} more`:""}\nScan QR in your email at entry.`
+                  );
+                }
+
+                // pass description and poster_image into PDF generator
+                sendTicketsPDF(
+                  user_name, user_email, event_id, ticket_type,
+                  ticketsData, event_name, description, poster_image
+                ).catch(e => console.error("PDF error:", e));
+              });
+            }
+          );
         });
-
-      connection.commit(err => {
-  if (err) return connection.rollback(() => connection.release());
-
-  // Release connection first
-  connection.release();
-
-  // Send response to client
-  res.status(200).json({
-    message: "Payment verified & tickets issued. PDF will be emailed shortly!",
-    ticket_count: quantity,
-    payment_reference: reference,
-  });
-
-  // Fire-and-forget SMS & PDF
-  db.query(`SELECT event_name FROM events WHERE id = ?`, [event_id], (err, results) => {
-    const event = results.length > 0 ? results[0] : null;
-    const event_name = event ? event.event_name : "Unknown Event";
-
-    db.query(`SELECT phone_number FROM event_attendees WHERE user_id = ?`, [user_id], (err, results) => {
-      const user = results.length > 0 ? results[0] : null;
-      const user_phone = user ? user.phone_number : null;
-
-      if (user_phone) {
-        const normalizedPhone = normalizePhone(user_phone);
-        if (normalizedPhone) {
-          sendSMS(normalizedPhone,
-         `🎟 Ticket Confirmed!,
-          Event: ${event_name},
-          Type: ${ticket_type}, Qty: ${quantity},
-          Code: ${ticketsData[0][2]}${quantity > 1 ? ` +${quantity - 1} more` : ''}`)
-
-        } else console.warn("Cannot normalize phone, SMS not sent");
-      } else console.warn("User phone not found, SMS not sent");
-
-      sendTicketsPDF(user_name, user_email, event_id, ticket_type, ticketsData, event_name)
-        .catch(err => console.error("Error sending tickets PDF:", err));
-    });
-  });
-});
-} catch (error) {
+      } catch (error) {
         connection.rollback(() => connection.release());
-        console.error("Error processing payment/tickets:", error);
-        return res.status(500).json({ message: "Error processing payment/tickets", error });
+        console.error("Payment/ticket error:", error);
+        res.status(500).json({ message: "Error processing payment/tickets", error });
       }
     });
   } catch (error) {
@@ -327,4 +565,6 @@ const verifyPayment = async (req, res) => {
     res.status(500).json({ message: "Verification error", error });
   }
 };
+
+// scanVerifyTicket lives in securityController.js
 module.exports = { buyTicket, verifyPayment };

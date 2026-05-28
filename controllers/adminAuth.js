@@ -50,7 +50,9 @@ const login = (req, res) => {
             return res.status(500).json({message:`internal server error`})
         } else {
             if (results.length === 0) {
-                console.log(`no user found with thie email`)
+                return res.status(401).json({
+                    message: `No user found with this email 
+                                 try creating account!`})
             }
             const user = results[0]
             const match = await bcrpyt.compare(password, user.password)
