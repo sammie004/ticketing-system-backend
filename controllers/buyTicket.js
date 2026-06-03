@@ -248,7 +248,7 @@ const sendTicketsPDF = async (
       const BRAND_Y = PH - 48;
       rr(page, LP, BRAND_Y-6, 26, 26, 5, C.purpleL);
       page.drawText("E",                { x:LP+7,  y:BRAND_Y+4,  size:14,  font:fBold, color:C.white    });
-      page.drawText("EVENTPASS",        { x:LP+32, y:BRAND_Y+6,  size:10,  font:fBold, color:C.white    });
+      page.drawText("PYRAMID-AFRICA",        { x:LP+32, y:BRAND_Y+6,  size:10,  font:fBold, color:C.white    });
       page.drawText("LIVE EXPERIENCES", { x:LP+32, y:BRAND_Y-6,  size:6.5, font:fReg,  color:C.iconTint });
 
       // E-TICKET pill
@@ -345,7 +345,7 @@ const sendTicketsPDF = async (
       const TY_X = LP + 40;
       page.drawText("THANK YOU!",                        { x:TY_X, y:BAND_H/2+8,  size:10, font:fBold, color:C.white    });
       page.drawText("We can't wait to create memories.", { x:TY_X, y:BAND_H/2-6,  size:8,  font:fReg,  color:C.iconTint });
-      page.drawText("@eventpasslive  |  eventpass.com",  { x:TY_X, y:BAND_H/2-20, size:7,  font:fReg,  color:C.muted    });
+      page.drawText("@Pyramid-Africa  |  Pyramid-Africa.com",  { x:TY_X, y:BAND_H/2-20, size:7,  font:fReg,  color:C.muted    });
 
       // ══ RIGHT PANEL ═══════════════════════════
       page.drawRectangle({ x:SEP, y:0, width:RW, height:PH, color:C.offWhite });
@@ -438,14 +438,96 @@ const sendTicketsPDF = async (
       await transporter.sendMail({
         from: process.env.SMTP_USER, to: user_email,
         subject: `Your Tickets for ${event_name}`,
-        html: `
-          <div style="font-family:sans-serif;max-width:520px;margin:auto;padding:40px 32px;background:#f7f7fb;border-radius:8px;">
-            <h2 style="color:#3314DD;margin:0 0 6px;">You're in! 🎉</h2>
-            <p style="color:#333;font-size:15px;">Hi <strong>${user_name}</strong>, your ticket${ticketsData.length>1?"s are":" is"} attached.</p>
-            <p style="color:#555;font-size:14px;line-height:1.6;">Open the PDF and <strong>show the QR code</strong> at the entrance for instant entry.</p>
-            <hr style="border:none;border-top:1px solid #ddd;margin:24px 0;">
-            <p style="color:#999;font-size:12px;">See you at <em>${event_name}</em>!</p>
-          </div>`,
+        html:`
+<div style="max-width:600px;margin:auto;font-family:Arial,Helvetica,sans-serif;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e8e8f0">
+
+  <!-- Header -->
+  <div style="background:#3314DD;padding:44px 36px 36px;text-align:center">
+    <div style="display:inline-block;background:rgba(255,255,255,0.12);border-radius:8px;padding:6px 16px;margin-bottom:20px">
+      <span style="color:rgba(255,255,255,0.9);font-size:12px;font-weight:600;letter-spacing:0.06em">E-TICKET CONFIRMED</span>
+    </div>
+    <h1 style="color:#ffffff;margin:0;font-size:28px;font-weight:700;line-height:1.3">
+      You're officially on<br>the guest list
+    </h1>
+    <p style="color:rgba(255,255,255,0.75);margin:12px 0 0;font-size:14px">
+      Your ticket has been generated and attached below.
+    </p>
+  </div>
+
+  <!-- Purple accent strip -->
+  <div style="height:5px;background:linear-gradient(90deg,#7F77DD,#AFA9EC,#7F77DD)"></div>
+
+  <!-- Body -->
+  <div style="padding:36px">
+
+    <!-- Greeting -->
+    <p style="color:#444;font-size:15px;margin:0 0 24px;line-height:1.7">
+      Hello <strong style="color:#111">${user_name}</strong>,<br>
+      Thank you for your purchase. Your ticket${ticketsData.length > 1 ? "s have" : " has"} been successfully generated and attached to this email as a PDF.
+    </p>
+
+    <!-- Event card -->
+    <div style="border-radius:12px;border:1px solid #e2e0f8;overflow:hidden;margin-bottom:24px">
+      <div style="background:#EEEDFE;padding:20px 24px">
+        <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#534AB7;letter-spacing:0.06em;text-transform:uppercase">Your Event</p>
+        <p style="margin:0;font-size:18px;font-weight:700;color:#26215C">${event_name}</p>
+      </div>
+      <div style="padding:16px 24px;background:#ffffff">
+        <p style="margin:0;color:#666;font-size:14px;line-height:1.7">
+          Your ticket contains a unique QR code. Present it at the venue entrance — it will be scanned for instant entry.
+        </p>
+      </div>
+    </div>
+
+    <!-- 3-step row -->
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px">
+      <tr>
+        <td width="32%" style="padding-right:6px">
+          <div style="background:#EEEDFE;border-radius:10px;padding:16px;text-align:center">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#534AB7">1. Check email</p>
+            <p style="margin:0;font-size:11px;color:#7F77DD;line-height:1.4">Open the PDF attached</p>
+          </div>
+        </td>
+        <td width="32%" style="padding:0 3px">
+          <div style="background:#EEEDFE;border-radius:10px;padding:16px;text-align:center">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#534AB7">2. Find QR code</p>
+            <p style="margin:0;font-size:11px;color:#7F77DD;line-height:1.4">Inside your ticket PDF</p>
+          </div>
+        </td>
+        <td width="32%" style="padding-left:6px">
+          <div style="background:#EEEDFE;border-radius:10px;padding:16px;text-align:center">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#534AB7">3. Show at entry</p>
+            <p style="margin:0;font-size:11px;color:#7F77DD;line-height:1.4">Scan &amp; you're in</p>
+          </div>
+        </td>
+      </tr>
+    </table>
+
+    <!-- Warning banner -->
+    <div style="border-radius:10px;border:1px solid #AFA9EC;background:#EEEDFE;padding:14px 18px;margin-bottom:28px">
+      <p style="margin:0;font-size:13px;color:#3C3489;line-height:1.6">
+        <strong>Keep your ticket safe.</strong> This ticket is non-transferable and can only be used once. Do not share or post your QR code online.
+      </p>
+    </div>
+
+    <p style="color:#555;font-size:14px;line-height:1.8;margin:0 0 8px">
+      We look forward to welcoming you and making this an unforgettable experience.
+    </p>
+    <p style="color:#111;font-size:15px;font-weight:700;margin:0">See you there! 🚀</p>
+  </div>
+
+  <!-- Divider -->
+  <div style="height:1px;background:#ececec"></div>
+
+  <!-- Footer -->
+  <div style="background:#f8f8fc;padding:24px 36px;text-align:center">
+    <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#3314DD">EventPass</p>
+    <p style="margin:0 0 6px;color:#888;font-size:12px">This email was sent regarding your ticket purchase.</p>
+    <p style="margin:0;color:#bbb;font-size:11px">If you did not make this purchase, please contact support immediately.</p>
+  </div>
+
+</div>
+`,
         attachments: [{ filename:"tickets.pdf", path:pdfPath }],
       });
       try { fs.unlinkSync(pdfPath); } catch(e) {}
