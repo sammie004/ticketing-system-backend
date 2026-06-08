@@ -1,12 +1,32 @@
-const express = require("express")
-const router = express.Router()
+const express = require("express");
+const router = express.Router();
 
-// call the controller
-const { getCreatorDashboardData } = require("../controllers/creator-insights")
-// autherntication middleware
-const protect = require("../middleware/middleware")
+// controller
+const { getCreatorDashboardData } = require("../controllers/creator-insights");
 
-// route to get creator dashboard data
-router.get("/creator-dashboard", protect('ADMIN'), getCreatorDashboardData)
+// middleware
+const protect = require("../middleware/middleware");
 
-module.exports = router
+/**
+ * @openapi
+ * /creator/creator-dashboard:
+ *   get:
+ *     summary: Get creator dashboard analytics data
+ *     tags:
+ *       - Creator
+ *     security:
+ *       - bearerAuth: []
+ *     description: Returns insights and analytics for event creators (admin-only access)
+ *     responses:
+ *       200:
+ *         description: Dashboard data retrieved successfully
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden (Admin only)
+ *       500:
+ *         description: Server error
+ */
+router.get("/creator-dashboard", protect("ADMIN"), getCreatorDashboardData);
+
+module.exports = router;

@@ -1,35 +1,28 @@
-// swagger.js
-const swaggerAutogen = require('swagger-autogen')();
+const swaggerJSDoc = require("swagger-jsdoc");
+const swaggerUi = require("swagger-ui-express");
 
-const doc = {
-  info: {
-    title: 'Pyramid-Africa API',
-    description: 'Ticketing Platform API'
+const swaggerSpec = swaggerJSDoc({
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "Pyramid-Africa API",
+      version: "1.0.0",
+      description: "Ticketing Platform API"
+    },
+    servers: [
+      {
+        url: "http://localhost:3000",
+        description: "Local"
+      },
+      {
+        url: "https://YOUR-NGROK-URL.ngrok-free.app",
+        description: "Test Environment"
+      }
+    ]
   },
-  host: 'localhost:3000',
-  schemes: ['http']
+  apis: ["./routes/*.js"] // specify the path to your route files
+});
+console.log("Swagger spec generated:", swaggerSpec); // Debugging line to check the generated spec
+module.exports = (app) => {
+  app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 };
-
-const outputFile = './swagger-output.json';
-
-const endpointsFiles = [
-  './server.js',
-  './routes/authRoutes.js',
-  './routes/events.js',
-  './routes/buy.js',
-  './routes/user.js',
-  './routes/verify.js',
-  './routes/getDash.js',
-  './routes/creator-dash.js',
-  './routes/create-ticket.js',
-  './routes/wallet-routes.js',
-  './routes/webhook.js'
-];
-
-swaggerAutogen(outputFile, endpointsFiles, doc)
-  .then(() => {
-    console.log('Swagger generated successfully');
-  })
-  .catch(err => {
-    console.error(err);
-  });
