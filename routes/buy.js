@@ -1,18 +1,14 @@
 const express = require("express");
-const router = express.Router();
-
+const router  = express.Router();
 const { buyTicket, verifyPayment } = require("../controllers/buyTicket");
-const protect = require("../middleware/middleware");
 
 /**
  * @openapi
  * /tickets/events/{id}/buy-ticket:
  *   post:
- *     summary: Buy a ticket for an event
+ *     summary: Buy a ticket for an event (guest checkout — no auth required)
  *     tags:
  *       - Tickets
- *     security:
- *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
@@ -27,55 +23,91 @@ const protect = require("../middleware/middleware");
  *           schema:
  *             type: object
  *             required:
+ *               - name
+ *               - email
  *               - ticket_type
  *               - quantity
  *             properties:
+ *               name:
+ *                 type: string
+ *                 example: Sammie
+ *               email:
+ *                 type: string
+ *                 example: samzie12346@gmail.com
+ *               phone_number:
+ *                 type: string
+ *                 example: "08031234567"
  *               ticket_type:
  *                 type: string
  *                 example: VIP
  *               quantity:
  *                 type: integer
- *                 example: 2
+ *                 example: 1
  *     responses:
  *       200:
  *         description: Payment initialized successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 authorization_url:
+ *                   type: string
+ *                   example: https://checkout.paystack.com/xxxx
+ *                 reference:
+ *                   type: string
+ *                   example: 0ce94f59-4b63-4814-9a4a-fdc16aa6277e
  *       400:
- *         description: Bad request
- *       401:
- *         description: Unauthorized
+ *         description: Bad request — missing fields or not enough tickets
  *       404:
- *         description: Event not found
+ *         description: Ticket type not found
  *       500:
  *         description: Server error
  */
-router.post("/events/:id/buy-ticket", protect, buyTicket);
+router.post("/events/:id/buy-ticket", buyTicket);
 
 /**
  * @openapi
  * /tickets/verify-payment:
- *   get:
- *     summary: Verify Paystack payment and issue tickets
+ *   post:
+ *     summary: Manually verify Paystack payment and issue tickets (local dev fallback)
+ *     description: >
+ *       Used as a fallback when the Paystack webhook cannot reach the server
+ *       (e.g. local development without ngrok). In production the webhook
+ *       handles verification automatically.
  *     tags:
  *       - Tickets
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: reference
- *         required: false
- *         schema:
- *           type: string
- *         description: Payment reference from Paystack (if required by controller)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reference
+ *             properties:
+ *               reference:
+ *                 type: string
+ *                 example: 0ce94f59-4b63-4814-9a4a-fdc16aa6277e
  *     responses:
  *       200:
- *         description: Payment verified and tickets issued
+ *         description: Payment verified and tickets issued — PDF emailed to buyer
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 ticket_count:
+ *                   type: integer
+ *                 payment_reference:
+ *                   type: string
  *       400:
- *         description: Payment not successful or invalid reference
- *       401:
- *         description: Unauthorized
+ *         description: Payment not successful or reference missing
  *       500:
  *         description: Server error
  */
-router.get("/verify-payment", protect, verifyPayment);
+router.post("/verify-payment", verifyPayment);
 
 module.exports = router;

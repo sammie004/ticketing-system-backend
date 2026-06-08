@@ -13,54 +13,151 @@ const { sendSMS }                   = require("../smsLogic/sms");
 const { creditWalletForTicketSale } = require("../wallets/wallet");
 
 // ─────────────────────────────────────────────
-// 1. INITIALIZE PAYMENT
+// HELPER — find or auto-create a guest user row
+// No password set — just name, email, phone
+// ─────────────────────────────────────────────
+const findOrCreateGuest = (name, email, phone_number) => new Promise((resolve, reject) => {
+  console.log(`[GUEST] Looking up email: ${email}`);
+
+  db.query(
+    `SELECT id, name, email FROM event_attendees WHERE email = ?`,
+    [email],
+    (err, results) => {
+      if (err) {
+        console.error(`[GUEST] Select error:`, err);
+        return reject(err);
+      }
+
+      // already exists — return existing user
+      if (results.length > 0) {
+        console.log(`[GUEST] ✅ Existing user found — id: ${results[0].id}, name: ${results[0].name}`);
+        return resolve(results[0]);
+      }
+
+      // does not exist — auto-create with no password
+      console.log(`[GUEST] No existing user — creating guest row for: ${email}`);
+      db.query(
+        `INSERT INTO event_attendees (name, email, phone_number)
+         VALUES (?, ?, ?)`,
+        [name, email, phone_number || null],
+        (err, result) => {
+          if (err) {
+            console.error(`[GUEST] ❌ Insert error:`, err);
+            console.error(`[GUEST] Insert values — name:${name} email:${email} phone:${phone_number}`);
+            return reject(err);
+          }
+          console.log(`[GUEST] ✅ Guest user created — id: ${result.insertId}`);
+          resolve({ id: result.insertId, name, email });
+        }
+      );
+    }
+  );
+});
+
+// ─────────────────────────────────────────────
+// 1. INITIALIZE PAYMENT (guest checkout)
+// No auth required — buyer details from body
 // ─────────────────────────────────────────────
 const buyTicket = async (req, res) => {
-  const user_id    = req.user.user_id || req.user.id;
-  const user_name  = req.user.name;
-  const user_email = req.user.email;
-  const event_id   = req.params.id;
-  const { ticket_type, quantity } = req.body;
+  console.log(`\n[BUY] ===== buyTicket called =====`);
+  console.log(`[BUY] Body:`, JSON.stringify(req.body));
+  console.log(`[BUY] Params:`, JSON.stringify(req.params));
 
-  if (!user_id)
-    return res.status(401).json({ message: "User ID missing from token. Please log in again." });
-  if (!ticket_type || !quantity)
+  const event_id = req.params.id;
+  const { name, email, phone_number, ticket_type, quantity } = req.body;
+
+  // validate required fields
+  if (!name || !email) {
+    console.warn(`[BUY] Missing name or email — name:${name} email:${email}`);
+    return res.status(400).json({ message: "Name and email are required" });
+  }
+  if (!ticket_type || !quantity) {
+    console.warn(`[BUY] Missing ticket_type or quantity`);
     return res.status(400).json({ message: "Ticket type and quantity are required" });
+  }
+
+  // basic email format check
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    console.warn(`[BUY] Invalid email format: ${email}`);
+    return res.status(400).json({ message: "Invalid email address" });
+  }
+
+  console.log(`[BUY] Validation passed — event_id:${event_id} ticket_type:${ticket_type} qty:${quantity}`);
 
   try {
+    // find or auto-create guest user
+    console.log(`[BUY] Calling findOrCreateGuest...`);
+    const guest = await findOrCreateGuest(name, email, phone_number);
+    console.log(`[BUY] Guest resolved — id:${guest.id} name:${guest.name} email:${guest.email}`);
+
+    console.log(`[BUY] Querying ticket_types — event_id:${event_id} name:${ticket_type}`);
     db.query(
       `SELECT * FROM ticket_types WHERE event_id = ? AND name = ? AND is_active = 1`,
       [event_id, ticket_type],
       async (err, results) => {
-        if (err) return res.status(500).json({ message: "DB error", err });
-        if (!results.length) return res.status(404).json({ message: "Ticket type not found" });
+        if (err) {
+          console.error(`[BUY] ticket_types query error:`, err);
+          return res.status(500).json({ message: "DB error", err });
+        }
+
+        console.log(`[BUY] ticket_types results count: ${results.length}`);
+        if (!results.length) {
+          console.warn(`[BUY] Ticket type not found — event_id:${event_id} type:${ticket_type}`);
+          return res.status(404).json({ message: "Ticket type not found" });
+        }
 
         const ticket = results[0];
-        if (ticket.quantity < quantity)
+        console.log(`[BUY] Ticket found — price:${ticket.price} remaining_qty:${ticket.quantity}`);
+
+        if (ticket.quantity < quantity) {
+          console.warn(`[BUY] Not enough tickets — available:${ticket.quantity} requested:${quantity}`);
           return res.status(400).json({ message: `Only ${ticket.quantity} tickets left` });
+        }
 
         const reference = crypto.randomUUID();
-        const response  = await fetch("https://api.paystack.co/transaction/initialize", {
+        const amount    = ticket.price * quantity * 100;  // in kobo
+        console.log(`[BUY] Initializing Paystack — amount:₦${ticket.price * quantity} (${amount} kobo) ref:${reference}`);
+
+        const response = await fetch("https://api.paystack.co/transaction/initialize", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            email: user_email,
-            amount: ticket.price * quantity * 100,
+            email: guest.email,
+            amount,
             reference,
-            metadata: { user_id, event_id, ticket_type, user_name, quantity },
+            metadata: {
+              user_id:      guest.id,
+              event_id,
+              ticket_type,
+              user_name:    guest.name,
+              quantity,
+              phone_number: phone_number || null,
+            },
             callback_url: `${process.env.FRONTEND_URL}/payment-success`,
           }),
         });
+
         const data = await response.json();
-        if (!data.status) return res.status(400).json({ message: "Payment init failed" });
+        console.log(`[BUY] Paystack init response status: ${data.status}`);
+        console.log(`[BUY] Paystack message: ${data.message}`);
+
+        if (!data.status) {
+          console.error(`[BUY] Paystack init failed:`, data);
+          return res.status(400).json({ message: "Payment init failed" });
+        }
+
+        console.log(`[BUY] ✅ Payment initialized — authorization_url: ${data.data.authorization_url}`);
         res.status(200).json({ authorization_url: data.data.authorization_url, reference });
       }
     );
   } catch (e) {
-    res.status(500).json({ message: "Payment initialization error" });
+    console.error("[BUY] ❌ Unexpected error:", e.message);
+    console.error(e.stack);
+    res.status(500).json({ message: "Payment initialization error", error: e.message });
   }
 };
 
