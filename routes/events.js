@@ -25,14 +25,14 @@ const eventUpload = safeUpload([
 // ─────────────────────────────────────────────
 // ROUTES
 // ─────────────────────────────────────────────
-router.post("/create-event", protect, eventUpload, CreateEvent);
+router.post("/create-event", protect('ADMIN'), eventUpload, CreateEvent);
 
-router.put("/cancel-event", protect, cancelEvent);
+router.put("/cancel-event", protect('ADMIN'), cancelEvent);
 
-router.put("/reactivate-event", protect, reActivate);
+router.put("/reactivate-event", protect('ADMIN'), reActivate);
 
-router.put("/update-event-images", protect, eventUpload, updateEventImages);
+router.put("/update-event-images", protect('ADMIN'), eventUpload, updateEventImages);
 
-router.get("/get-attendees/:event_id", protect, getEventAttendees);
+router.get("/get-attendees/:event_id", protect('ADMIN'), getEventAttendees);
 
 module.exports = router;

@@ -7,6 +7,6 @@ const { getCreatorDashboardData } = require("../controllers/creator-insights")
 const protect = require("../middleware/middleware")
 
 // route to get creator dashboard data
-router.get("/creator-dashboard", protect, getCreatorDashboardData)
+router.get("/creator-dashboard", protect('ADMIN'), getCreatorDashboardData)
 
 module.exports = router

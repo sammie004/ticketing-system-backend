@@ -1,6 +1,8 @@
 const mysql   = require('mysql');
 const express = require('express');
-const db      = require('./connection/connection');
+const db = require('./connection/connection');
+const swaggerUi = require('swagger-ui-express');
+const swaggerFile = require('./swagger-output.json');
 const app     = express();
 
 // ─────────────────────────────────────────────
@@ -9,6 +11,11 @@ const app     = express();
 // ─────────────────────────────────────────────
 const webhookRoutes = require('./routes/webhook');
 app.use('/api/webhooks', webhookRoutes);
+
+// ─────────────────────────────────────────────
+// SWAGGER
+// ─────────────────────────────────────────────
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerFile));
 
 // ─────────────────────────────────────────────
 // MIDDLEWARE

@@ -31,6 +31,8 @@
     "pdf-lib": "^1.17.1",
     "pdfkit": "^0.17.2",
     "qrcode": "^1.5.4",
+    "swagger-autogen": "^2.23.7",
+    "swagger-ui-express": "^5.0.1",
     "twilio": "^5.11.2"
   }
 }
